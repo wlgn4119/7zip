@@ -456,6 +456,24 @@ Z7_COM7F_IMF(CArchiveExtractCallback::SetRatioInfo(const UInt64 *inSize, const U
 }
 
 
+// CFileInfo::Find() does not follow links by default: it uses the reparse-point
+// attributes on Windows and lstat() on POSIX.
+static bool PathIsReparsePointNoFollow(const FString &path)
+{
+  FString pathToCheck(path);
+#if defined(_WIN32) && !defined(UNDER_CE)
+  // Find() handles alternate data streams by returning the stream's metadata,
+  // which does not include the base file's reparse-point attribute. Check the
+  // base file because opening an alternate stream through a link follows it.
+  const int colonPos = NName::FindAltStreamColon(pathToCheck);
+  if (colonPos >= 0 && pathToCheck[(unsigned)colonPos + 1] != 0)
+    pathToCheck.DeleteFrom((unsigned)colonPos);
+#endif
+  NFind::CFileInfo pathInfo;
+  return pathInfo.Find(pathToCheck) && pathInfo.IsOsSymLink();
+}
+
+
 void CArchiveExtractCallback::CreateComplexDirectory(
     const UStringVector &dirPathParts, bool isFinal, FString &fullPath, bool createDirs)
 {
@@ -486,17 +504,13 @@ void CArchiveExtractCallback::CreateComplexDirectory(
 
     const bool isFinalDir = (i == dirPathParts.Size() - 1 && isFinal && _item.IsDir);
 
-#if defined(_WIN32) && !defined(UNDER_CE)
     // Check each path prefix before creating or opening anything below it.
-    // Find() returns the attributes of the reparse point itself on Windows.
-    NFind::CFileInfo pathInfo;
-    if (pathInfo.Find(fullPath) && pathInfo.HasReparsePoint())
+    if (PathIsReparsePointNoFollow(fullPath))
     {
       _itemFailure = true;
-      SendMessageError("Cannot extract through reparse point", fullPath);
+      SendMessageError("Cannot extract through symbolic link or reparse point", fullPath);
       return;
     }
-#endif
     
     if (fullPath.IsEmpty()
 #if defined(_WIN32) && !defined(UNDER_CE)
@@ -1450,6 +1464,16 @@ HRESULT CArchiveExtractCallback::GetExtractStream(CMyComPtr<ISequentialOutStream
     }
   }
   #endif // SUPPORT_ALT_STREAMS
+
+  // CreateComplexDirectory() checks parent directories. The final component
+  // of a file path is not part of _item.PathParts, so check it separately
+  // before CheckExistFile() can remove or rename an existing destination.
+  if (!isAnti && PathIsReparsePointNoFollow(fullProcessedPath))
+  {
+    _itemFailure = true;
+    RINOK(SendMessageError("Cannot extract through symbolic link or reparse point", fullProcessedPath))
+    return S_OK;
+  }
 
   if (_item.IsDir)
   {
