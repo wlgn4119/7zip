@@ -457,7 +457,7 @@ Z7_COM7F_IMF(CArchiveExtractCallback::SetRatioInfo(const UInt64 *inSize, const U
 
 
 void CArchiveExtractCallback::CreateComplexDirectory(
-    const UStringVector &dirPathParts, bool isFinal, FString &fullPath)
+    const UStringVector &dirPathParts, bool isFinal, FString &fullPath, bool createDirs)
 {
   // we use (_item.IsDir) in this function
   bool isAbsPath = false;
@@ -509,6 +509,9 @@ void CArchiveExtractCallback::CreateComplexDirectory(
         _itemFailure = true; // we don't want to set attributes for root (or root drive) path
       continue;
     }
+
+    if (!createDirs)
+      continue;
 
     // bool need_SetAttrib = isFinalDir;
     if (!isFinalDir || !NFile::NFind::DoesDirExist(fullPath))
@@ -1216,7 +1219,7 @@ void CArchiveExtractCallback::CreateFolders()
   */
 
   FString fullPathNew;
-  CreateComplexDirectory(pathParts, isFinal, fullPathNew);
+  CreateComplexDirectory(pathParts, isFinal, fullPathNew, true);
 
   /*
   if (is_DirOp)
@@ -1411,11 +1414,19 @@ HRESULT CArchiveExtractCallback::GetExtractStream(CMyComPtr<ISequentialOutStream
   {
     // 21.04: CreateFolders doesn't change (_item.PathParts)
     CreateFolders();
-    // CreateFolders marks a file item as failed when an existing path
-    // component is a reparse point. Do not open the resulting path.
-    if (_itemFailure && !_item.IsDir)
-      return S_OK;
   }
+#if defined(_WIN32) && !defined(UNDER_CE)
+  else
+  {
+    // Anti-items do not create parent directories, but may delete an existing
+    // output path. Check their components without creating anything first.
+    FString fullPath;
+    CreateComplexDirectory(_item.PathParts, true, fullPath, false);
+  }
+#endif
+  // Do not open, delete, or set attributes through a failed output path.
+  if (_itemFailure)
+    return S_OK;
   
   FString fullProcessedPath (us2fs(processedPath));
   if (_pathMode != NExtract::NPathMode::kAbsPaths
