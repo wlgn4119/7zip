@@ -485,6 +485,18 @@ void CArchiveExtractCallback::CreateComplexDirectory(
     fullPath += us2fs(s);
 
     const bool isFinalDir = (i == dirPathParts.Size() - 1 && isFinal && _item.IsDir);
+
+#if defined(_WIN32) && !defined(UNDER_CE)
+    // Check each path prefix before creating or opening anything below it.
+    // Find() returns the attributes of the reparse point itself on Windows.
+    NFind::CFileInfo pathInfo;
+    if (pathInfo.Find(fullPath) && pathInfo.HasReparsePoint())
+    {
+      _itemFailure = true;
+      SendMessageError("Cannot extract through reparse point", fullPath);
+      return;
+    }
+#endif
     
     if (fullPath.IsEmpty()
 #if defined(_WIN32) && !defined(UNDER_CE)
@@ -1399,6 +1411,10 @@ HRESULT CArchiveExtractCallback::GetExtractStream(CMyComPtr<ISequentialOutStream
   {
     // 21.04: CreateFolders doesn't change (_item.PathParts)
     CreateFolders();
+    // CreateFolders marks a file item as failed when an existing path
+    // component is a reparse point. Do not open the resulting path.
+    if (_itemFailure && !_item.IsDir)
+      return S_OK;
   }
   
   FString fullProcessedPath (us2fs(processedPath));
